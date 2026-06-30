@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Job Tracker FB v3</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #020617; color: #e2e8f0; font-family: Inter, system-ui, sans-serif; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+#setup { display:none; position:fixed; inset:0; background:#020617; z-index:9999; align-items:center; justify-content:center; }
+#setup.on { display:flex; }
+.sc { background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:40px; max-width:500px; width:90%; }
+.sc h1 { font-size:22px; font-weight:800; color:#f1f5f9; margin-bottom:8px; }
+.sc p  { font-size:13px; color:#64748b; line-height:1.7; margin-bottom:20px; }
+.sc input { width:100%; background:#0a0f1e; border:1px solid #334155; border-radius:8px; padding:10px 14px; color:#e2e8f0; font-size:13px; outline:none; margin-bottom:12px; font-family:monospace; }
+.sc button { background:#3b82f6; color:#fff; border:none; border-radius:8px; padding:10px 24px; font-size:14px; font-weight:700; cursor:pointer; width:100%; }
+.sc .hint { margin-top:16px; font-size:11px; color:#475569; background:#1e293b; border-radius:8px; padding:10px 14px; line-height:1.7; }
+.sc .hint a { color:#3b82f6; }
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <div class="sc">
+    <h1>Job Tracker FB v3</h1>
+    <p>Per le funzioni AI serve una API key Anthropic (gratuita con crediti iniziali).<br>Viene salvata solo nel tuo browser.</p>
+    <input type="password" id="ki" placeholder="sk-ant-api03-..." />
+    <button onclick="saveKey()">Avvia</button>
+    <div class="hint">
+      1. Vai su <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a><br>
+      2. Crea account gratuito &rarr; genera API key<br>
+      3. Incollala qui sopra e premi Avvia
+    </div>
+  </div>
+</div>
+
+<div id="root"></div>
+
+<script>
+window.ANTHROPIC_API_KEY = "";
+function saveKey(){
+  var k=document.getElementById("ki").value.trim();
+  if(!k.startsWith("sk-ant-")){alert("Chiave non valida (deve iniziare con sk-ant-)");return;}
+  localStorage.setItem("anthropic_api_key",k);
+  window.ANTHROPIC_API_KEY=k;
+  document.getElementById("setup").classList.remove("on");
+}
+(function(){
+  var k=localStorage.getItem("anthropic_api_key");
+  if(k){window.ANTHROPIC_API_KEY=k;}
+  else{document.getElementById("setup").classList.add("on");}
+})();
+</script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+
+const STAGES = [
+  { id:"saved",     label:"📋 Archiviato", color:"#64748b" },
+  { id:"applied",   label:"✉️ Candidato",  color:"#3b82f6" },
+  { id:"response",  label:"📬 Risposta",   color:"#8b5cf6" },
+  { id:"interview", label:"🎤 Colloquio",  color:"#f59e0b" },
+  { id:"offer",     label:"💼 Offerta",    color:"#10b981" },
+  { id:"closed",    label:"🏁 Chiuso",     color:"#ef4444" },
+];
+const OUTCOMES      = ["In corso","Assunto ✅","Rifiutato ❌","Ritirato 🚫","Silenzio 🔇"];
+const PRIO_CLR      = { alta:"#ef4444", media:"#f59e0b", bassa:"#94a3b8" };
+const CONTACT_TYPES = ["Recruiter","HR Manager","Hiring Manager","Referral","Headhunter","LinkedIn Connect","Altro"];
+const CV_VERSIONS   = ["CV Standard","CV Fintech","CV Digital Marketing","CV CRM Specialist","CV Head of Marketing","Personalizzato"];
+const CL_VERSIONS   = ["CL Standard","CL Fintech","CL Startup","CL Agenzia","Personalizzata"];
+const FOLLOWUP_T    = ["Email follow-up","LinkedIn message","Telefonata","Reminder candidatura","Ringraziamento post-colloquio","Sollecito risposta"];
+
+const FB_PROFILE = `Francesco Bellon – Marketing Communication Manager, Milano.
+20+ anni: CRM Salesforce, Pardot, marketing automation, GDPR, lead generation B2B, eventi B2B 500+ partecipanti (77% attendance),
+LinkedIn/Google Ads, UX/UI, CMS, stakeholder management (IT, Legal, C-level).
+Settori: fintech B2B (Cerved/ION Group), automotive EMEA (WPP/GTC 10 mercati), food/insurance/agency.
+Formazione: Design Politecnico Milano; Executive Master Digital Transformation + Strategic Marketing (Il Sole 24 Ore).
+KPI: -15% CPL, +10% form completions, LinkedIn +10% followers, engagement >4%.
+Differenziatore: connette creatività e processi.`;
+
+const empty_job = () => ({
+  id:null, company:"", role:"", sector:"", location:"Milano",
+  salary_min:"", salary_max:"", url:"", channel:"", stage:"saved",
+  outcome:"In corso", date_saved:new Date().toISOString().split("T")[0],
+  date_applied:"", contact_id:null, cv_version:"CV Standard", cl_version:"CL Standard",
+  notes:"", raw_text:"", ats_keywords:[], cover_letter:"",
+  correspondence:[], interviews:[], followups:[], priority:"media",
+  cv_master_id:null, cv_suggestions:[], cv_final:"",
+});
+
+const empty_cv_master = () => ({ id:null, name:"", lang:"IT", text:"" });
+
+const empty_contact = () => ({
+  id:null, name:"", email:"", phone:"", linkedin:"",
+  company:"", role:"", type:"Recruiter", cv_sent:"", cl_sent:"",
+  notes:"", date_added:new Date().toISOString().split("T")[0], interactions:[],
+});
+
+async function callClaude(sys, usr, maxT=1000) {
+  const apiKey = window.ANTHROPIC_API_KEY || localStorage.getItem("anthropic_api_key") || "";
+  const r = await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST", headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:maxT, system:sys, messages:[{role:"user",content:usr}] })
+  });
+  const d = await r.json();
+  return d.content?.[0]?.text || "";
+}
+
+const LS = { fontSize:11, fontWeight:700, color:"#475569", letterSpacing:"0.06em", textTransform:"uppercase", marginBottom:4, display:"block" };
+const IB = { background:"#0a0f1e", border:"1px solid #1e293b", borderRadius:8, padding:"8px 12px", color:"#e2e8f0", fontSize:13, outline:"none", width:"100%", boxSizing:"border-box", fontFamily:"inherit" };
+
+function Inp({label,value,onChange,type="text",placeholder,style={}}){
+  return <div style={{display:"flex",flexDirection:"column",...style}}>{label&&<span style={LS}>{label}</span>}<input type={type} value={value||""} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={IB} onFocus={e=>e.target.style.borderColor="#3b82f6"} onBlur={e=>e.target.style.borderColor="#1e293b"}/></div>;
+}
+function Sel({label,value,onChange,options,style={}}){
+  return <div style={{display:"flex",flexDirection:"column",...style}}>{label&&<span style={LS}>{label}</span>}<select value={value||""} onChange={e=>onChange(e.target.value)} style={{...IB,cursor:"pointer"}}>{options.map(o=><option key={o.value!==undefined?o.value:o} value={o.value!==undefined?o.value:o}>{o.label!==undefined?o.label:o}</option>)}</select></div>;
+}
+function TA({label,value,onChange,rows=4,placeholder,style={}}){
+  return <div style={{display:"flex",flexDirection:"column",...style}}>{label&&<span style={LS}>{label}</span>}<textarea value={value||""} onChange={e=>onChange(e.target.value)} rows={rows} placeholder={placeholder} style={{...IB,resize:"vertical"}} onFocus={e=>e.target.style.borderColor="#3b82f6"} onBlur={e=>e.target.style.borderColor="#1e293b"}/></div>;
+}
+function Btn({children,onClick,color="#3b82f6",disabled=false,small=false,outline=false,style={}}){
+  return <button onClick={onClick} disabled={disabled} style={{background:outline?"transparent":disabled?"#1e293b":color,color:outline?color:disabled?"#475569":"#fff",border:outline?`1px solid ${color}`:"none",borderRadius:8,padding:small?"5px 12px":"9px 20px",fontSize:small?12:13,fontWeight:700,cursor:disabled?"default":"pointer",opacity:disabled?0.5:1,transition:"opacity 0.15s",display:"inline-flex",alignItems:"center",gap:4,...style}}>{children}</button>;
+}
+function Badge({text,color="#64748b"}){
+  return <span style={{background:color+"22",color,border:`1px solid ${color}44`,borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{text}</span>;
+}
+function Spinner(){return <span style={{display:"inline-block",width:13,height:13,border:"2px solid #334155",borderTopColor:"#3b82f6",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>;}
+function Card({children,style={}}){return <div style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:12,padding:"18px 20px",...style}}>{children}</div>;}
+function ST({children}){return <div style={{fontSize:11,fontWeight:700,color:"#475569",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12}}>{children}</div>;}
+
+function computeMetrics(jobs){
+  const total=jobs.length, applied=jobs.filter(j=>j.stage!=="saved").length;
+  const responses=jobs.filter(j=>["response","interview","offer","closed"].includes(j.stage)).length;
+  const interviews=jobs.filter(j=>["interview","offer"].includes(j.stage)).length;
+  const offers=jobs.filter(j=>j.stage==="offer").length;
+  const hired=jobs.filter(j=>j.outcome==="Assunto ✅").length;
+  const rejected=jobs.filter(j=>j.outcome==="Rifiutato ❌").length;
+  const silence=jobs.filter(j=>j.outcome==="Silenzio 🔇").length;
+  const rr=applied>0?Math.round(responses/applied*100):0;
+  const ir=responses>0?Math.round(interviews/responses*100):0;
+  const or2=interviews>0?Math.round(offers/interviews*100):0;
+  const byChannel={}, byCv={}, bySector={};
+  jobs.forEach(j=>{
+    if(j.channel){if(!byChannel[j.channel])byChannel[j.channel]={total:0,responses:0};byChannel[j.channel].total++;if(["response","interview","offer","closed"].includes(j.stage))byChannel[j.channel].responses++;}
+    if(j.cv_version){if(!byCv[j.cv_version])byCv[j.cv_version]={total:0,responses:0};byCv[j.cv_version].total++;if(["response","interview","offer","closed"].includes(j.stage))byCv[j.cv_version].responses++;}
+    if(j.sector){if(!bySector[j.sector])bySector[j.sector]={total:0,responses:0};bySector[j.sector].total++;if(["response","interview","offer","closed"].includes(j.stage))bySector[j.sector].responses++;}
+  });
+  const today=new Date();
+  const followupDue=jobs.filter(j=>{
+    if(j.stage!=="applied"||!j.date_applied)return false;
+    return Math.floor((today-new Date(j.date_applied))/(864e5))>=7;
+  });
+  return {total,applied,responses,interviews,offers,hired,rejected,silence,rr,ir,or:or2,byChannel,byCv,bySector,followupDue};
+}
+
+function FollowupPanel({job,onMutate}){
+  const [open,setOpen]=useState(false);
+  const [form,setForm]=useState({date:new Date().toISOString().split("T")[0],type:"Email follow-up",notes:"",done:false});
+  const [gl,setGl]=useState(false);
+
+  const save=()=>{
+    if(!form.date)return;
+    onMutate({followups:[...(job.followups||[]),{...form,id:Date.now()}]});
+    setForm({date:new Date().toISOString().split("T")[0],type:"Email follow-up",notes:"",done:false});
+    setOpen(false);
+  };
+  const toggle=id=>onMutate({followups:(job.followups||[]).map(f=>f.id===id?{...f,done:!f.done}:f)});
+  const del=id=>onMutate({followups:(job.followups||[]).filter(f=>f.id!==id)});
+  const genAI=async()=>{
+    setGl(true);
+    const t=await callClaude("Scrivi in italiano professionale, stile diretto. Max 80 parole. Solo testo email.","Scrivi un breve "+form.type+" per "+job.company+", ruolo: "+job.role+". Candidatura inviata il "+job.date_applied+". Mittente: Francesco Bellon, Marketing Communication Manager. Tono assertivo e professionale.",400);
+    setForm(p=>({...p,notes:t.trim()}));
+    setGl(false);
+  };
+  const pending=(job.followups||[]).filter(f=>!f.done);
+  const done=(job.followups||[]).filter(f=>f.done);
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <ST>⏰ Follow-up ({(job.followups||[]).length})</ST>
+        <Btn small onClick={()=>setOpen(v=>!v)}>+ Aggiungi</Btn>
+      </div>
+      {open&&<div style={{background:"#0a0f1e",border:"1px solid #334155",borderRadius:10,padding:14,marginBottom:14}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <Inp label="Data" type="date" value={form.date} onChange={v=>setForm(p=>({...p,date:v}))}/>
+          <Sel label="Tipo" value={form.type} onChange={v=>setForm(p=>({...p,type:v}))} options={FOLLOWUP_T}/>
+        </div>
+        <TA label="Testo / note" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} rows={4} placeholder="Scrivi il messaggio o genera con AI…" style={{marginBottom:10}}/>
+        <div style={{display:"flex",gap:8}}>
+          <Btn small onClick={save} disabled={!form.date}>💾 Salva</Btn>
+          <Btn small outline color="#8b5cf6" onClick={genAI} disabled={gl}>{gl?<><Spinner/>Genero…</>:"✨ Genera AI"}</Btn>
+          <Btn small outline color="#64748b" onClick={()=>setOpen(false)}>Annulla</Btn>
+        </div>
+      </div>}
+      {pending.length===0&&done.length===0&&!open&&<div style={{color:"#475569",fontSize:13,textAlign:"center",padding:"16px 0"}}>Nessun follow-up pianificato.</div>}
+      {pending.length>0&&<div style={{marginBottom:12}}>
+        <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,marginBottom:8,textTransform:"uppercase"}}>⏳ Da fare</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {pending.sort((a,b)=>a.date.localeCompare(b.date)).map(f=>(
+            <div key={f.id} style={{background:"#0a0f1e",border:"1px solid #f59e0b44",borderRadius:8,padding:"10px 14px",display:"flex",gap:10,alignItems:"flex-start"}}>
+              <button onClick={()=>toggle(f.id)} style={{flexShrink:0,width:18,height:18,borderRadius:4,border:"2px solid #f59e0b",background:"transparent",cursor:"pointer",marginTop:2}}/>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",gap:8,marginBottom:4,flexWrap:"wrap"}}><Badge text={f.type} color="#f59e0b"/><span style={{fontSize:12,color:"#64748b"}}>{f.date}</span></div>
+                {f.notes&&<div style={{fontSize:12,color:"#94a3b8",lineHeight:1.5,whiteSpace:"pre-wrap"}}>{f.notes}</div>}
+              </div>
+              <button onClick={()=>del(f.id)} style={{background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:12}}>✕</button>
+            </div>
+          ))}
+        </div>
+      </div>}
+      {done.length>0&&<details><summary style={{fontSize:12,color:"#475569",cursor:"pointer",marginBottom:8}}>✅ Completati ({done.length})</summary>
+        <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8}}>
+          {done.map(f=>(
+            <div key={f.id} style={{background:"#0a0f1e",border:"1px solid #1e293b",borderRadius:8,padding:"8px 12px",opacity:0.6,display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{color:"#10b981"}}>✓</span><Badge text={f.type} color="#64748b"/><span style={{fontSize:12,color:"#475569"}}>{f.date}</span>
+              <button onClick={()=>del(f.id)} style={{marginLeft:"auto",background:"none",border:"none",color:"#475569",cursor:"pointer",fontSize:11}}>✕</button>
+            </div>
+          ))}
+        </div>
+      </details>}
+    </div>
+  );
+}
+
+function AnalyticsView({jobs,onNavigate}){
+  const m=computeMetrics(jobs);
+  const [insight,setInsight]=useState("");
+  const [load,setLoad]=useState(false);
+  const getInsights=async()=>{
+    setLoad(true);
+    const sum=`Candidature: ${m.total} totali, ${m.applied} inviate. Tasso risposta: ${m.rr}%, colloquio: ${m.ir}%, offerta: ${m.or}%. Rifiutati: ${m.rejected}, silenzio: ${m.silence}. Per canale: ${Object.entries(m.byChannel).map(([k,v])=>`${k}:${v.responses}/${v.total}`).join(", ")}. Per CV: ${Object.entries(m.byCv).map(([k,v])=>`${k}:${v.responses}/${v.total}`).join(", ")}. Per settore: ${Object.entries(m.bySector).map(([k,v])=>`${k}:${v.responses}/${v.total}`).join(", ")}. Follow-up scaduti: ${m.followupDue.length}.`;
+    const ins=await callClaude("Sei un career coach esperto. 3-4 insight concreti e azionabili in italiano. Sii diretto e specifico. Bullet points brevi.","Analizza job search di Francesco Bellon (Marketing Comm Manager, Milano):\n"+sum+"\nInsight su: cosa funziona, cosa migliorare, priorità d'azione.",600);
+    setInsight(ins); setLoad(false);
+  };
+  const Bar=({label,val,max,color})=>(
+    <div style={{marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:12,color:"#94a3b8"}}>{label}</span><span style={{fontSize:12,fontWeight:700,color}}>{val}</span></div>
+      <div style={{background:"#1e293b",borderRadius:4,height:6}}><div style={{background:color,borderRadius:4,height:6,width:`${Math.min(100,max>0?val/max*100:0)}%`,transition:"width 0.4s"}}/></div>
+    </div>
+  );
+  const Table=({title,data,color})=>{
+    const entries=Object.entries(data).filter(([,v])=>v.total>0).sort((a,b)=>b[1].responses-a[1].responses);
+    if(!entries.length)return null;
+    return <Card style={{marginBottom:12}}><ST>{title}</ST>{entries.map(([k,v])=>(
+      <div key={k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+        <span style={{fontSize:12,color:"#e2e8f0",minWidth:140,flexShrink:0}}>{k}</span>
+        <div style={{flex:1,background:"#1e293b",borderRadius:4,height:6}}><div style={{background:color,borderRadius:4,height:6,width:`${v.total>0?v.responses/v.total*100:0}%`}}/></div>
+        <span style={{fontSize:11,color:"#64748b",minWidth:80,textAlign:"right"}}>{v.responses}/{v.total} ({v.total>0?Math.round(v.responses/v.total*100):0}%)</span>
+      </div>
+    ))}</Card>;
+  };
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+        {[["CV inviati",m.applied,"#3b82f6",null],["Tasso risposta",m.rr+"%",m.rr>=20?"#10b981":m.rr>=10?"#f59e0b":"#ef4444",m.responses+" risposte"],["Tasso colloquio",m.ir+"%",m.ir>=40?"#10b981":"#f59e0b",m.interviews+" colloqui"],["Follow-up urgenti",m.followupDue.length,m.followupDue.length>0?"#ef4444":"#10b981","candidature >7gg senza risposta"]].map(([l,v,c,s])=>(
+          <div key={l} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:10,padding:"14px 16px"}}>
+            <div style={{fontSize:26,fontWeight:800,color:c}}>{v}</div>
+            <div style={{fontSize:12,color:"#94a3b8",marginTop:2}}>{l}</div>
+            {s&&<div style={{fontSize:11,color:"#475569",marginTop:4}}>{s}</div>}
+          </div>
+        ))}
+      </div>
+      <Card>
+        <ST>📊 Funnel di selezione</ST>
+        <Bar label="Candidature inviate" val={m.applied} max={m.total} color="#3b82f6"/>
+        <Bar label="Risposte ricevute" val={m.responses} max={m.applied} color="#8b5cf6"/>
+        <Bar label="Colloqui ottenuti" val={m.interviews} max={m.responses} color="#f59e0b"/>
+        <Bar label="Offerte ricevute" val={m.offers} max={m.interviews} color="#10b981"/>
+      </Card>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <Table title="📡 Per canale" data={m.byChannel} color="#3b82f6"/>
+        <Table title="📄 Per versione CV" data={m.byCv} color="#8b5cf6"/>
+      </div>
+      <Table title="🏢 Per settore" data={m.bySector} color="#f59e0b"/>
+      <Card>
+        <ST>🏁 Esiti</ST>
+        <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
+          {[["Assunti","✅",m.hired,"#10b981"],["Rifiutati","❌",m.rejected,"#ef4444"],["Silenzio","🔇",m.silence,"#64748b"]].map(([l,e,v,c])=>(
+            <div key={l} style={{textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:c}}>{e} {v}</div><div style={{fontSize:11,color:"#475569"}}>{l}</div></div>
+          ))}
+        </div>
+      </Card>
+      {m.followupDue.length>0&&<Card style={{border:"1px solid #ef444444"}}>
+        <ST>🚨 Follow-up urgenti</ST>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {m.followupDue.map(j=>(
+            <div key={j.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#0a0f1e",borderRadius:8,cursor:"pointer"}} onClick={()=>onNavigate(j)}>
+              <div><span style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>{j.company}</span><span style={{fontSize:12,color:"#64748b",marginLeft:8}}>{j.role}</span></div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:11,color:"#ef4444"}}>Candidato il {j.date_applied}</span><Badge text="Apri →" color="#ef4444"/></div>
+            </div>
+          ))}
+        </div>
+      </Card>}
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <ST>🤖 AI Coach — analisi e suggerimenti</ST>
+          <Btn small onClick={getInsights} disabled={load||m.applied===0}>{load?<><Spinner/>Analisi…</>:"✨ Analizza con AI"}</Btn>
+        </div>
+        {m.applied===0&&<div style={{color:"#475569",fontSize:13}}>Aggiungi almeno una candidatura.</div>}
+        {insight&&<div style={{fontSize:13,color:"#cbd5e1",lineHeight:1.8,whiteSpace:"pre-wrap"}}>{insight}</div>}
+        {!insight&&m.applied>0&&<div style={{color:"#475569",fontSize:13}}>Premi "Analizza con AI" per insight personalizzati.</div>}
+      </Card>
+    </div>
+  );
+}
+
+function ContactsView({contacts,setContacts,jobs}){
+  const [view,setView]=useState("list");
+  const [sel,setSel]=useState(null);
+  const [form,setForm]=useState(empty_contact());
+  const [search,setSrch]=useState("");
+  const [intF,setIntF]=useState({date:new Date().toISOString().split("T")[0],type:"Email",notes:""});
+  const [showInt,setShowInt]=useState(false);
+  const CTCLR={"Recruiter":"#3b82f6","HR Manager":"#8b5cf6","Hiring Manager":"#f59e0b","Referral":"#10b981","Headhunter":"#06b6d4","LinkedIn Connect":"#64748b","Altro":"#64748b"};
+  const saveContact=()=>{
+    if(!form.name)return;
+    if(form.id){setContacts(p=>p.map(c=>c.id===form.id?form:c));setSel(form);}
+    else{const nc={...form,id:Date.now()};setContacts(p=>[...p,nc]);setSel(nc);}
+    setView("detail");
+  };
+  const delContact=id=>{setContacts(p=>p.filter(c=>c.id!==id));setSel(null);setView("list");};
+  const mutC=(id,patch)=>{setContacts(p=>p.map(c=>c.id===id?{...c,...patch}:c));if(sel?.id===id)setSel(p=>({...p,...patch}));};
+  const addInt=()=>{
+    if(!intF.notes&&!intF.type)return;
+    mutC(sel.id,{interactions:[...(sel.interactions||[]),{...intF,id:Date.now()}]});
+    setIntF({date:new Date().toISOString().split("T")[0],type:"Email",notes:""});
+    setShowInt(false);
+  };
+  const linked=cid=>jobs.filter(j=>String(j.contact_id)===String(cid));
+  const filtered=contacts.filter(c=>!search||c.name.toLowerCase().includes(search.toLowerCase())||c.company.toLowerCase().includes(search.toLowerCase()));
+
+  if(view==="form")return(
+    <div style={{maxWidth:700}}>
+      <button onClick={()=>setView(sel?"detail":"list")} style={{background:"none",border:"none",color:"#3b82f6",cursor:"pointer",fontSize:13,marginBottom:14,padding:0}}>← Torna</button>
+      <Card>
+        <ST>{form.id?"✏️ Modifica contatto":"➕ Nuovo contatto"}</ST>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <Inp label="Nome *" value={form.name} onChange={v=>setForm(p=>({...p,name:v}))} placeholder="Mario Rossi"/>
+          <Sel label="Tipo" value={form.type} onChange={v=>setForm(p=>({...p,type:v}))} options={CONTACT_TYPES}/>
+          <Inp label="Azienda" value={form.company} onChange={v=>setForm(p=>({...p,company:v}))}/>
+          <Inp label="Ruolo" value={form.role} onChange={v=>setForm(p=>({...p,role:v}))}/>
+          <Inp label="Email" value={form.email} onChange={v=>setForm(p=>({...p,email:v}))}/>
+          <Inp label="Telefono" value={form.phone} onChange={v=>setForm(p=>({...p,phone:v}))}/>
+          <Inp label="LinkedIn" value={form.linkedin} onChange={v=>setForm(p=>({...p,linkedin:v}))} placeholder="https://linkedin.com/in/…"/>
+          <Inp label="Data aggiunto" type="date" value={form.date_added} onChange={v=>setForm(p=>({...p,date_added:v}))}/>
+          <Sel label="CV inviato" value={form.cv_sent||"—"} onChange={v=>setForm(p=>({...p,cv_sent:v}))} options={["—",...CV_VERSIONS]}/>
+          <Sel label="Cover letter inviata" value={form.cl_sent||"—"} onChange={v=>setForm(p=>({...p,cl_sent:v}))} options={["—",...CL_VERSIONS]}/>
+        </div>
+        <TA label="Note" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} rows={3} placeholder="Come l'hai conosciuto, contesto, impressioni…"/>
+        <div style={{display:"flex",gap:8,marginTop:12}}>
+          <Btn onClick={saveContact} disabled={!form.name}>💾 Salva</Btn>
+          <Btn outline color="#64748b" onClick={()=>setView(sel?"detail":"list")}>Annulla</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+
+  if(view==="detail"&&sel){
+    const contact=contacts.find(c=>c.id===sel.id)||sel;
+    const lj=linked(contact.id);
+    return(
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <button onClick={()=>setView("list")} style={{background:"none",border:"none",color:"#3b82f6",cursor:"pointer",fontSize:13,padding:0,alignSelf:"flex-start"}}>← Rubrica</button>
+        <Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:800,color:"#f1f5f9"}}>{contact.name}</div>
+              <div style={{fontSize:13,color:"#94a3b8",marginTop:2}}>{contact.role}{contact.company&&` · ${contact.company}`}</div>
+              <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                <Badge text={contact.type} color={CTCLR[contact.type]||"#64748b"}/>
+                {contact.cv_sent&&contact.cv_sent!=="—"&&<Badge text={"📄 "+contact.cv_sent} color="#3b82f6"/>}
+                {contact.cl_sent&&contact.cl_sent!=="—"&&<Badge text={"✉️ "+contact.cl_sent} color="#8b5cf6"/>}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn small outline color="#64748b" onClick={()=>{setForm(contact);setView("form");}}>✏️</Btn>
+              <Btn small outline color="#ef4444" onClick={()=>delContact(contact.id)}>🗑️</Btn>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:16,marginTop:10,flexWrap:"wrap"}}>
+            {contact.email&&<a href={"mailto:"+contact.email} style={{fontSize:12,color:"#3b82f6"}}>📧 {contact.email}</a>}
+            {contact.phone&&<span style={{fontSize:12,color:"#94a3b8"}}>📞 {contact.phone}</span>}
+            {contact.linkedin&&<a href={contact.linkedin} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:"#3b82f6"}}>LinkedIn →</a>}
+          </div>
+        </Card>
+        {lj.length>0&&<Card><ST>💼 Candidature collegate ({lj.length})</ST>{lj.map(j=>(
+          <div key={j.id} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1e293b"}}>
+            <span style={{fontSize:13,color:"#e2e8f0"}}>{j.company} — {j.role}</span>
+            <Badge text={STAGES.find(s=>s.id===j.stage)?.label||j.stage} color={STAGES.find(s=>s.id===j.stage)?.color||"#64748b"}/>
+          </div>
+        ))}</Card>}
+        <Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <ST>📝 Log interazioni ({(contact.interactions||[]).length})</ST>
+            <Btn small onClick={()=>setShowInt(v=>!v)}>+ Log</Btn>
+          </div>
+          {showInt&&<div style={{background:"#0a0f1e",border:"1px solid #334155",borderRadius:10,padding:14,marginBottom:12}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <Inp label="Data" type="date" value={intF.date} onChange={v=>setIntF(p=>({...p,date:v}))}/>
+              <Sel label="Tipo" value={intF.type} onChange={v=>setIntF(p=>({...p,type:v}))} options={["Email","LinkedIn","Telefonata","Meeting","Altro"]}/>
+            </div>
+            <TA label="Note" value={intF.notes} onChange={v=>setIntF(p=>({...p,notes:v}))} rows={3} style={{marginBottom:10}}/>
+            <div style={{display:"flex",gap:8}}><Btn small onClick={addInt}>💾 Salva</Btn><Btn small outline color="#64748b" onClick={()=>setShowInt(false)}>Annulla</Btn></div>
+          </div>}
+          {(contact.interactions||[]).length===0&&!showInt&&<div style={{color:"#475569",fontSize:13,textAlign:"center",padding:"12px 0"}}>Nessuna interazione registrata.</div>}
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[...(contact.interactions||[])].sort((a,b)=>b.date.localeCompare(a.date)).map(i=>(
+              <div key={i.id} style={{background:"#0a0f1e",border:"1px solid #1e293b",borderRadius:8,padding:"10px 14px"}}>
+                <div style={{display:"flex",gap:8,marginBottom:4}}><Badge text={i.type} color="#64748b"/><span style={{fontSize:12,color:"#475569"}}>{i.date}</span></div>
+                {i.notes&&<div style={{fontSize:12,color:"#94a3b8",lineHeight:1.5}}>{i.notes}</div>}
+              </div>
+            ))}
+          </div>
+        </Card>
+        {contact.notes&&<Card><ST>📌 Note</ST><div style={{fontSize:13,color:"#cbd5e1",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{contact.notes}</div></Card>}
+      </div>
+    );
+  }
+
+  return(
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#e2e8f0"}}>Rubrica ({contacts.length})</div>
+        <Btn onClick={()=>{setForm(empty_contact());setView("form");}}>+ Nuovo contatto</Btn>
+      </div>
+      <input value={search} onChange={e=>setSrch(e.target.value)} placeholder="🔍 Cerca…" style={{...IB,marginBottom:14,maxWidth:300}}/>
+      {filtered.length===0&&<div style={{color:"#475569",fontSize:13,textAlign:"center",padding:40}}>Nessun contatto. Aggiungine uno.</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {filtered.map(c=>(
+          <div key={c.id} onClick={()=>{setSel(c);setView("detail");}}
+            style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:10,padding:"12px 16px",cursor:"pointer",display:"flex",alignItems:"center",gap:14,transition:"border-color 0.15s"}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor="#3b82f6"}
+            onMouseLeave={e=>e.currentTarget.style.borderColor="#1e293b"}>
+            <div style={{width:40,height:40,borderRadius:"50%",background:(CTCLR[c.type]||"#64748b")+"33",border:"2px solid "+(CTCLR[c.type]||"#64748b"),display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:16,fontWeight:800,color:CTCLR[c.type]||"#64748b"}}>
+              {c.name.charAt(0).toUpperCase()}
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:14,fontWeight:700,color:"#e2e8f0"}}>{c.name}</div>
+              <div style={{fontSize:12,color:"#64748b"}}>{c.role}{c.company&&" · "+c.company}</div>
+            </div>
+            <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              <Badge text={c.type} color={CTCLR[c.type]||"#64748b"}/>
+              {c.cv_sent&&c.cv_sent!=="—"&&<Badge text="CV ✓" color="#3b82f6"/>}
+              {c.cl_sent&&c.cl_sent!=="—"&&<Badge text="CL ✓" color="#8b5cf6"/>}
+              {linked(c.id).length>0&&<Badge text={linked(c.id).length+" cand."} color="#f59e0b"/>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function JobTracker(){
+  const [jobs,setJobs]=useState(()=>{try{const s=localStorage.getItem("fb_jobs_v3");return s?JSON.parse(s):[]}catch{return[]}});
+  const [contacts,setContacts]=useState(()=>{try{const s=localStorage.getItem("fb_contacts");return s?JSON.parse(s):[]}catch{return[]}});
+  const [cvMasters,setCvMasters]=useState(()=>{try{const s=localStorage.getItem("fb_cv_masters");return s?JSON.parse(s):[]}catch{return[]}});
+  const [section,setSection]=useState("board");
+  const [view,setView]=useState("kanban");
+  const [sel,setSel]=useState(null);
+  const [form,setForm]=useState(empty_job());
+  const [tab,setTab]=useState("overview");
+  const [search,setSrch]=useState("");
+  const [filterStage,setFilter]=useState("all");
+  const [iUrl,setIUrl]=useState("");
+  const [iText,setIText]=useState("");
+  const [iLoad,setILoad]=useState(false);
+  const [iErr,setIErr]=useState("");
+  const [atsLoad,setAtsLoad]=useState(false);
+  const [clLoad,setClLoad]=useState(false);
+  const [cvLoad,setCvLoad]=useState(false);
+  const [cvMasterForm,setCvMasterForm]=useState(null);
+  const [showCvMasters,setShowCvMasters]=useState(false);
+  const [driveClientId,setDriveClientId]=useState(()=>localStorage.getItem("drive_client_id")||"");
+  const [driveClientIdInput,setDriveClientIdInput]=useState(()=>localStorage.getItem("drive_client_id")||"");
+  const [driveToken,setDriveToken]=useState(null);
+  const [driveFileId,setDriveFileId]=useState(()=>localStorage.getItem("drive_file_id")||null);
+  const [driveStatus,setDriveStatus]=useState("disconnected");
+  const [driveLastSync,setDriveLastSync]=useState(()=>localStorage.getItem("drive_last_sync")||"");
+  const [driveErr,setDriveErr]=useState("");
+  const [showDrivePanel,setShowDrivePanel]=useState(false);
+  const [showIv,setShowIv]=useState(false);
+  const [ivForm,setIvForm]=useState({date:"",type:"Telefonico",interviewer:"",notes:"",outcome:""});
+
+  useEffect(()=>{try{localStorage.setItem("fb_jobs_v3",JSON.stringify(jobs))}catch{}},[jobs]);
+  useEffect(()=>{try{localStorage.setItem("fb_contacts",JSON.stringify(contacts))}catch{}},[contacts]);
+  useEffect(()=>{try{localStorage.setItem("fb_cv_masters",JSON.stringify(cvMasters))}catch{}},[cvMasters]);
+
+  const mutateJob=useCallback((id,patch)=>{
+    setJobs(p=>p.map(j=>j.id===id?{...j,...patch}:j));
+    setSel(p=>p?.id===id?{...p,...patch}:p);
+  },[]);
+
+  const saveForm=()=>{
+    if(!form.company||!form.role)return;
+    if(form.id){setJobs(p=>p.map(j=>j.id===form.id?form:j));setSel(form);}
+    else{const nj={...form,id:Date.now()};setJobs(p=>[...p,nj]);setSel(nj);}
+    setView("detail");setTab("overview");
+  };
+  const deleteJob=id=>{setJobs(p=>p.filter(j=>j.id!==id));setSel(null);setView("kanban");};
+  const openDetail=job=>{setSel(job);setView("detail");setTab("overview");};
+
+  const handleImport=async()=>{
+    if(!iText.trim()&&!iUrl.trim())return;
+    setILoad(true);setIErr("");
+    try{
+      const src=iText.trim()||"URL: "+iUrl.trim();
+      const raw=await callClaude("Rispondi SOLO con JSON valido, senza markdown.","Analizza annuncio ed estrai:\n"+src+"\n\nJSON: {\"company\":\"\",\"role\":\"\",\"sector\":\"\",\"location\":\"\",\"salary_min\":\"\",\"salary_max\":\"\",\"channel\":\"\",\"summary\":\"\",\"raw_text\":\"\"}",1000);
+      let p;try{p=JSON.parse(raw.replace(/```json|```/g,""))}catch{throw new Error("Testo non riconoscibile. Incolla il testo completo dell'annuncio.")}
+      const nj={...empty_job(),id:Date.now(),company:p.company||"",role:p.role||"",sector:p.sector||"",location:p.location||"Milano",salary_min:p.salary_min||"",salary_max:p.salary_max||"",channel:p.channel||(iUrl?"LinkedIn":"Altro"),url:iUrl||"",notes:p.summary||"",raw_text:p.raw_text||iText};
+      setJobs(prev=>[...prev,nj]);setSel(nj);setIUrl("");setIText("");setView("detail");setTab("overview");
+    }catch(e){setIErr(e.message||"Errore importazione.")}
+    setILoad(false);
+  };
+
+  const extractAts=async(job)=>{
+    if(!job.raw_text&&!job.notes)return;
+    setAtsLoad(true);
+    try{
+      const raw=await callClaude("Rispondi SOLO con array JSON valido.","Estrai keyword ATS. PROFILO:\n"+FB_PROFILE+"\nANNUNCIO:\n"+(job.raw_text||job.notes)+"\n\n[{\"keyword\":\"\",\"tier\":\"critical|important|nice\",\"in_profile\":true}] 20-30 keyword.",1200);
+      let kws;try{kws=JSON.parse(raw.replace(/```json|```/g,""))}catch{kws=[]}
+      mutateJob(job.id,{ats_keywords:kws});
+    }catch(e){console.error(e)}
+    setAtsLoad(false);
+  };
+
+  const genCL=async(job)=>{
+    setClLoad(true);
+    try{
+      const cl=await callClaude("Italiano professionale, stile diretto. Max 250 parole.","Cover letter per "+job.company+", ruolo: "+job.role+".\nPROFILO:\n"+FB_PROFILE+"\n"+(job.raw_text||job.notes)+"\n\n3 paragrafi: 1)perché questa azienda 2)elementi profilo rilevanti con dati 3)call to action. NON iniziare con 'Gentile'.",800);
+      mutateJob(job.id,{cover_letter:cl});
+    }catch(e){console.error(e)}
+    setClLoad(false);
+  };
+
+  const saveCvMaster=()=>{
+    if(!cvMasterForm||!cvMasterForm.name||!cvMasterForm.text)return;
+    if(cvMasterForm.id){setCvMasters(p=>p.map(m=>m.id===cvMasterForm.id?cvMasterForm:m));}
+    else{setCvMasters(p=>[...p,{...cvMasterForm,id:Date.now()}]);}
+    setCvMasterForm(null);
+  };
+  const deleteCvMaster=id=>{setCvMasters(p=>p.filter(m=>m.id!==id));};
+
+  const genCvSuggestions=async(job)=>{
+    const master=cvMasters.find(m=>m.id===job.cv_master_id);
+    if(!master||(!job.raw_text&&!job.notes))return;
+    setCvLoad(true);
+    try{
+      const sys="Rispondi SOLO con array JSON valido, senza markdown, senza testo aggiuntivo.";
+      const usr="Sei un esperto ATS e career coach. Confronta il CV base con l'annuncio. Proponi riformulazioni SOLO per i bullet/frasi che possono essere migliorati per aderenza ATS e pertinenza, integrando keyword mancanti in modo naturale, senza inventare esperienze o numeri non presenti nel CV originale.\n\nCV BASE:\n"+master.text+"\n\nANNUNCIO:\n"+(job.raw_text||job.notes)+"\n\nRestituisci array JSON, max 10 elementi, ognuno:\n{\"original\":\"frase esatta presa dal CV base\",\"suggested\":\"riformulazione migliorata\",\"keyword\":\"keyword target\",\"reason\":\"motivo breve, max 15 parole\"}\n\nIMPORTANTE: \"original\" deve essere una sottostringa ESATTA presente nel CV base, così da poterla sostituire automaticamente.";
+      const raw=await callClaude(sys,usr,2000);
+      let sugg;try{sugg=JSON.parse(raw.replace(/```json|```/g,"").trim())}catch{sugg=[]}
+      const withMeta=(Array.isArray(sugg)?sugg:[]).map(s=>({...s,id:Date.now()+Math.random(),status:"pending"}));
+      mutateJob(job.id,{cv_suggestions:withMeta,cv_final:""});
+    }catch(e){console.error(e)}
+    setCvLoad(false);
+  };
+
+  const updateCvSuggestion=(job,suggId,patch)=>{
+    mutateJob(job.id,{cv_suggestions:(job.cv_suggestions||[]).map(s=>s.id===suggId?{...s,...patch}:s)});
+  };
+
+  const composeFinalCv=(job)=>{
+    const master=cvMasters.find(m=>m.id===job.cv_master_id);
+    if(!master)return;
+    let text=master.text;
+    (job.cv_suggestions||[]).filter(s=>s.status==="approved").forEach(s=>{
+      if(s.original&&text.includes(s.original)){text=text.replace(s.original,s.suggested);}
+    });
+    mutateJob(job.id,{cv_final:text});
+  };
+
+  const DRIVE_FILE_NAME="fb_job_tracker_data.json";
+
+  const driveCreateFile=async(token,data)=>{
+    const metadata={name:DRIVE_FILE_NAME,mimeType:"application/json"};
+    const boundary="-------fbjt"+Date.now();
+    const body=
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
+      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(data)}\r\n--${boundary}--`;
+    const r=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",{
+      method:"POST",
+      headers:{Authorization:"Bearer "+token,"Content-Type":`multipart/related; boundary=${boundary}`},
+      body
+    });
+    const d=await r.json();
+    return d.id;
+  };
+
+  const driveAfterAuth=async(token)=>{
+    try{
+      setDriveStatus("syncing");setDriveErr("");
+      let fid=localStorage.getItem("drive_file_id")||null;
+      if(fid){
+        const check=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?fields=id,trashed`,{headers:{Authorization:"Bearer "+token}});
+        if(!check.ok)fid=null; else { const cd=await check.json(); if(cd.trashed)fid=null; }
+      }
+      if(!fid){
+        const q=encodeURIComponent(`name='${DRIVE_FILE_NAME}' and trashed=false`);
+        const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)`,{headers:{Authorization:"Bearer "+token}});
+        const d=await r.json();
+        if(d.files&&d.files.length>0)fid=d.files[0].id;
+      }
+      if(fid){
+        const r2=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,{headers:{Authorization:"Bearer "+token}});
+        const cloud=r2.ok?await r2.json().catch(()=>null):null;
+        if(cloud){
+          const localCount=jobs.length+contacts.length+cvMasters.length;
+          const cloudCount=(cloud.jobs||[]).length+(cloud.contacts||[]).length+(cloud.cvMasters||[]).length;
+          const proceed=localCount===0||window.confirm("Trovati dati su Google Drive (sync da un altro dispositivo).\n\nCloud: "+cloudCount+" elementi · Locale: "+localCount+" elementi.\n\nCaricare i dati dal cloud? (sovrascrive i dati locali su questo dispositivo)");
+          if(proceed){
+            setJobs(cloud.jobs||[]);
+            setContacts(cloud.contacts||[]);
+            setCvMasters(cloud.cvMasters||[]);
+          }
+        }
+      }else{
+        fid=await driveCreateFile(token,{jobs,contacts,cvMasters});
+      }
+      setDriveFileId(fid);
+      localStorage.setItem("drive_file_id",fid);
+      setDriveStatus("connected");
+      const now=new Date().toLocaleString("it-IT");
+      setDriveLastSync(now);
+      localStorage.setItem("drive_last_sync",now);
+    }catch(e){console.error(e);setDriveStatus("error");setDriveErr("Errore durante la sincronizzazione iniziale.");}
+  };
+
+  const driveConnect=()=>{
+    const cid=driveClientIdInput.trim();
+    if(!cid){setDriveErr("Inserisci il Client ID OAuth.");return;}
+    if(!(window.google&&window.google.accounts&&window.google.accounts.oauth2)){setDriveErr("Google API non ancora caricata. Attendi un istante e riprova (serve connessione e apertura via http/https, non file://).");return;}
+    setDriveErr("");
+    localStorage.setItem("drive_client_id",cid);
+    setDriveClientId(cid);
+    setDriveStatus("connecting");
+    try{
+      const client=window.google.accounts.oauth2.initTokenClient({
+        client_id:cid,
+        scope:"https://www.googleapis.com/auth/drive.file",
+        callback:(resp)=>{
+          if(resp.error){setDriveStatus("error");setDriveErr("Autenticazione rifiutata o fallita.");return;}
+          setDriveToken(resp.access_token);
+          driveAfterAuth(resp.access_token);
+        }
+      });
+      client.requestAccessToken();
+    }catch(e){console.error(e);setDriveStatus("error");setDriveErr("Client ID non valido o origine non autorizzata in Google Cloud Console.");}
+  };
+
+  const driveSaveNow=useCallback(async()=>{
+    if(!driveToken||!driveFileId)return;
+    try{
+      setDriveStatus("syncing");
+      const r=await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,{
+        method:"PATCH",
+        headers:{Authorization:"Bearer "+driveToken,"Content-Type":"application/json"},
+        body:JSON.stringify({jobs,contacts,cvMasters})
+      });
+      if(!r.ok){throw new Error("save failed "+r.status);}
+      setDriveStatus("connected");
+      const now=new Date().toLocaleString("it-IT");
+      setDriveLastSync(now);
+      localStorage.setItem("drive_last_sync",now);
+    }catch(e){console.error(e);setDriveStatus("error");setDriveErr("Sessione scaduta o errore di rete. Premi 'Riconnetti'.");}
+  },[driveToken,driveFileId,jobs,contacts,cvMasters]);
+
+  const driveDisconnect=()=>{
+    setDriveToken(null);setDriveStatus("disconnected");setDriveErr("");
+  };
+
+  useEffect(()=>{
+    if(!driveToken||!driveFileId)return;
+    const t=setTimeout(()=>{driveSaveNow();},2500);
+    return ()=>clearTimeout(t);
+    // eslint-disable-next-line
+  },[jobs,contacts,cvMasters,driveToken,driveFileId]);
+
+  const getStage=id=>STAGES.find(s=>s.id===id)||STAGES[0];
+  const filtered=jobs.filter(j=>{
+    const ms=filterStage==="all"||j.stage===filterStage;
+    const mq=!search||j.company.toLowerCase().includes(search.toLowerCase())||j.role.toLowerCase().includes(search.toLowerCase());
+    return ms&&mq;
+  });
+  const metrics=computeMetrics(jobs);
+  const fuAlert=metrics.followupDue.length;
+
+  const ImportView=()=>(
+    <div style={{maxWidth:700,margin:"0 auto"}}>
+      <Card>
+        <ST>🔗 Importa annuncio con AI</ST>
+        <div style={{fontSize:13,color:"#64748b",marginBottom:16,lineHeight:1.6}}>Incolla URL e/o testo. Claude estrae tutto automaticamente.<br/><span style={{color:"#f59e0b"}}>Consiglio:</span> il testo completo dà risultati più precisi.</div>
+        <Inp label="URL annuncio" value={iUrl} onChange={setIUrl} placeholder="https://www.linkedin.com/jobs/view/…" style={{marginBottom:12}}/>
+        <TA label="Testo completo annuncio" value={iText} onChange={setIText} rows={12} placeholder="Incolla titolo, descrizione, requisiti, benefit…" style={{marginBottom:16}}/>
+        {iErr&&<div style={{background:"#ef444420",border:"1px solid #ef444440",borderRadius:8,padding:"10px 14px",color:"#ef4444",fontSize:12,marginBottom:12}}>{iErr}</div>}
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <Btn onClick={handleImport} disabled={iLoad||(!iUrl.trim()&&!iText.trim())}>{iLoad?<><Spinner/>Importazione AI…</>:"✨ Importa e analizza"}</Btn>
+          <Btn outline color="#64748b" onClick={()=>setView("kanban")}>Annulla</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+
+  const KanbanView=()=>(
+    <div style={{overflowX:"auto",paddingBottom:16}}>
+      <div style={{display:"flex",gap:10,minWidth:980}}>
+        {STAGES.map(stage=>(
+          <div key={stage.id} style={{flex:"0 0 188px",background:"#0a0f1e",borderRadius:12,padding:12,border:"1px solid #1e293b"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <span style={{fontSize:12,fontWeight:700,color:stage.color}}>{stage.label}</span>
+              <span style={{background:stage.color+"22",color:stage.color,borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{filtered.filter(j=>j.stage===stage.id).length}</span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {filtered.filter(j=>j.stage===stage.id).map(job=>(
+                <div key={job.id} onClick={()=>openDetail(job)}
+                  style={{background:"#0f172a",borderRadius:8,padding:"10px 12px",cursor:"pointer",borderLeft:"3px solid "+(PRIO_CLR[job.priority]||"#64748b"),transition:"transform 0.1s"}}
+                  onMouseEnter={e=>e.currentTarget.style.transform="translateY(-1px)"}
+                  onMouseLeave={e=>e.currentTarget.style.transform="translateY(0)"}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#e2e8f0",marginBottom:2}}>{job.company}</div>
+                  <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>{job.role}</div>
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                    {(job.ats_keywords||[]).length>0&&<Badge text={(job.ats_keywords||[]).length+"kw"} color="#8b5cf6"/>}
+                    {job.cover_letter&&<Badge text="CL✓" color="#10b981"/>}
+                    {(job.followups||[]).filter(f=>!f.done).length>0&&<Badge text={"⏰"+(job.followups||[]).filter(f=>!f.done).length} color="#f59e0b"/>}
+                    {job.salary_min&&<Badge text={"€"+job.salary_min+"k"} color="#3b82f6"/>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const ListView=()=>(
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      {filtered.length===0&&<div style={{textAlign:"center",color:"#475569",padding:40,fontSize:14}}>Nessuna offerta. Usa "Importa" per iniziare.</div>}
+      {filtered.map(job=>{
+        const stage=getStage(job.stage);
+        const fu=(job.followups||[]).filter(f=>!f.done).length;
+        return(
+          <div key={job.id} onClick={()=>openDetail(job)}
+            style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:10,padding:"12px 16px",cursor:"pointer",display:"flex",alignItems:"center",gap:14,transition:"border-color 0.15s"}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor="#3b82f6"}
+            onMouseLeave={e=>e.currentTarget.style.borderColor="#1e293b"}>
+            <div style={{width:4,height:44,borderRadius:4,background:PRIO_CLR[job.priority],flexShrink:0}}/>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:14,fontWeight:700,color:"#e2e8f0"}}>{job.company}</div><div style={{fontSize:12,color:"#94a3b8"}}>{job.role}</div></div>
+            <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0,flexWrap:"wrap"}}>
+              {job.sector&&<Badge text={job.sector} color="#64748b"/>}
+              <Badge text={stage.label} color={stage.color}/>
+              {fu>0&&<Badge text={"⏰ "+fu} color="#f59e0b"/>}
+              {job.cover_letter&&<Badge text="CL ✓" color="#10b981"/>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const DetailView=()=>{
+    if(!sel)return null;
+    const job=jobs.find(j=>j.id===sel.id)||sel;
+    const stage=getStage(job.stage);
+    const addIv=()=>{if(!ivForm.date)return;mutateJob(job.id,{interviews:[...(job.interviews||[]),{...ivForm,id:Date.now()}]});setIvForm({date:"",type:"Telefonico",interviewer:"",notes:"",outcome:""});setShowIv(false);};
+    const TABS=[{id:"overview",label:"📋 Scheda"},{id:"ats",label:"🎯 ATS"},{id:"cvmatch",label:"📄 CV Match"},{id:"cover",label:"✉️ Cover"},{id:"emails",label:"📧 Email"},{id:"followup",label:"⏰ Follow-up"},{id:"interviews",label:"🎤 Colloqui"}];
+
+    return(
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,marginBottom:14}}>
+            <div>
+              <div style={{fontSize:22,fontWeight:800,color:"#f1f5f9",letterSpacing:"-0.02em"}}>{job.company}</div>
+              <div style={{fontSize:14,color:"#94a3b8",marginTop:2,marginBottom:8}}>{job.role}</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <Badge text={stage.label} color={stage.color}/>
+                {job.sector&&<Badge text={job.sector} color="#64748b"/>}
+                {job.cv_version&&<Badge text={job.cv_version} color="#3b82f6"/>}
+                {job.cl_version&&<Badge text={job.cl_version} color="#8b5cf6"/>}
+                <Badge text={"Priorità "+job.priority} color={PRIO_CLR[job.priority]}/>
+                {job.url&&<a href={job.url} target="_blank" rel="noopener noreferrer" style={{color:"#3b82f6",fontSize:12,textDecoration:"none"}}>🔗 Annuncio</a>}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,flexShrink:0}}>
+              <Btn small outline color="#64748b" onClick={()=>{setForm(job);setView("form");}}>✏️</Btn>
+              <Btn small outline color="#ef4444" onClick={()=>deleteJob(job.id)}>🗑️</Btn>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+            {STAGES.map(s=><button key={s.id} onClick={()=>mutateJob(job.id,{stage:s.id})} style={{background:job.stage===s.id?s.color:"#1e293b",color:job.stage===s.id?"#fff":"#475569",border:"1px solid "+(job.stage===s.id?s.color:"#334155"),borderRadius:20,padding:"3px 11px",fontSize:11,cursor:"pointer",fontWeight:700,transition:"all 0.12s"}}>{s.label}</button>)}
+          </div>
+        </Card>
+
+        <div style={{display:"flex",gap:2,borderBottom:"1px solid #1e293b",overflowX:"auto"}}>
+          {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",borderBottom:tab===t.id?"2px solid #3b82f6":"2px solid transparent",color:tab===t.id?"#3b82f6":"#64748b",padding:"8px 14px",cursor:"pointer",fontSize:13,fontWeight:700,whiteSpace:"nowrap"}}>{t.label}</button>)}
+        </div>
+
+        {tab==="overview"&&<div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Card><ST>📅 Date</ST>{[["Archiviato",job.date_saved],["Candidato",job.date_applied||"—"],["Esito",job.outcome]].map(([l,v])=><div key={l} style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:12,color:"#475569"}}>{l}</span><span style={{fontSize:12,fontWeight:600,color:"#cbd5e1"}}>{v}</span></div>)}</Card>
+            <Card><ST>💰 RAL & Versioni</ST>{[["RAL min",job.salary_min?"€"+job.salary_min+".000":"—"],["RAL max",job.salary_max?"€"+job.salary_max+".000":"—"],["CV",job.cv_version||"—"],["Cover",job.cl_version||"—"]].map(([l,v])=><div key={l} style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:12,color:"#475569"}}>{l}</span><span style={{fontSize:12,fontWeight:600,color:"#cbd5e1"}}>{v}</span></div>)}</Card>
+          </div>
+          <Card><ST>👤 Contatto riferimento</ST>
+            <Sel label="" value={job.contact_id||""} onChange={v=>mutateJob(job.id,{contact_id:v||null})}
+              options={[{value:"",label:"— Nessun contatto —"},...contacts.map(c=>({value:String(c.id),label:c.name+(c.company?" · "+c.company:"")}))]}/>
+          </Card>
+          {(job.notes||job.raw_text)&&<Card><ST>📝 Note & Annuncio</ST>
+            {job.notes&&<div style={{fontSize:13,color:"#cbd5e1",lineHeight:1.6,whiteSpace:"pre-wrap",marginBottom:job.raw_text?12:0}}>{job.notes}</div>}
+            {job.raw_text&&<details><summary style={{fontSize:12,color:"#64748b",cursor:"pointer"}}>Testo annuncio completo</summary><div style={{fontSize:12,color:"#64748b",lineHeight:1.6,whiteSpace:"pre-wrap",maxHeight:200,overflow:"auto",marginTop:8,padding:10,background:"#0a0f1e",borderRadius:6}}>{job.raw_text}</div></details>}
+          </Card>}
+        </div>}
+
+        {tab==="ats"&&<Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <ST>🎯 ATS Keywords</ST>
+            <Btn small onClick={()=>extractAts(job)} disabled={atsLoad||(!job.raw_text&&!job.notes)}>{atsLoad?<><Spinner/>Analisi…</>:"✨ Analizza ATS"}</Btn>
+          </div>
+          {(!job.raw_text&&!job.notes)&&<div style={{background:"#f59e0b18",border:"1px solid #f59e0b44",borderRadius:8,padding:"10px 14px",color:"#f59e0b",fontSize:12}}>⚠️ Importa prima il testo dell'annuncio.</div>}
+          {atsLoad&&<div style={{display:"flex",gap:8,alignItems:"center",justifyContent:"center",padding:20,color:"#64748b"}}><Spinner/>Analisi in corso…</div>}
+          {(job.ats_keywords||[]).length>0&&[["critical","🔴 Imprescindibili","#ef4444"],["important","🟡 Importanti","#f59e0b"],["nice","🟢 Nice to have","#10b981"]].map(([tier,label,color])=>{
+            const kws=(job.ats_keywords||[]).filter(k=>k.tier===tier);
+            if(!kws.length)return null;
+            return <div key={tier} style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color,marginBottom:8,textTransform:"uppercase"}}>{label}</div><div style={{display:"flex",flexWrap:"wrap",gap:6}}>{kws.map((k,i)=><span key={i} style={{background:color+"18",color,border:"1px solid "+color+"44",borderRadius:20,padding:"4px 12px",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:5}}>{k.keyword}{k.in_profile&&<span style={{fontSize:9,background:color+"33",borderRadius:10,padding:"1px 5px"}}>✓CV</span>}</span>)}</div></div>;
+          })}
+          {(job.ats_keywords||[]).length===0&&!atsLoad&&(job.raw_text||job.notes)&&<div style={{color:"#475569",fontSize:13,textAlign:"center",padding:20}}>Premi "Analizza ATS".</div>}
+        </Card>}
+
+        {tab==="cvmatch"&&<div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:cvMasters.length?12:0}}>
+              <ST>📄 CV base utilizzati</ST>
+              <Btn small outline color="#64748b" onClick={()=>setShowCvMasters(v=>!v)}>{showCvMasters?"Chiudi":"⚙️ Gestisci CV base"}</Btn>
+            </div>
+            {showCvMasters&&<div style={{background:"#0a0f1e",border:"1px solid #334155",borderRadius:10,padding:14,marginBottom:12}}>
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:cvMasters.length?14:0}}>
+                {cvMasters.map(m=>(
+                  <div key={m.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0f172a",border:"1px solid #1e293b",borderRadius:8,padding:"8px 12px"}}>
+                    <div><span style={{fontSize:13,fontWeight:700,color:"#e2e8f0"}}>{m.name}</span> <Badge text={m.lang} color="#64748b"/> <span style={{fontSize:11,color:"#475569"}}>{m.text.split(" ").length} parole</span></div>
+                    <div style={{display:"flex",gap:6}}>
+                      <Btn small outline color="#3b82f6" onClick={()=>setCvMasterForm(m)}>✏️</Btn>
+                      <Btn small outline color="#ef4444" onClick={()=>deleteCvMaster(m.id)}>🗑️</Btn>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {cvMasterForm?(
+                <div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                    <Inp label="Nome versione" value={cvMasterForm.name} onChange={v=>setCvMasterForm(p=>({...p,name:v}))} placeholder="es. CV Marketing Communication Manager IT"/>
+                    <Sel label="Lingua" value={cvMasterForm.lang} onChange={v=>setCvMasterForm(p=>({...p,lang:v}))} options={["IT","EN"]}/>
+                  </div>
+                  <TA label="Testo completo CV (testo semplice)" value={cvMasterForm.text} onChange={v=>setCvMasterForm(p=>({...p,text:v}))} rows={10} placeholder="Incolla qui il testo integrale del CV…" style={{marginBottom:10}}/>
+                  <div style={{display:"flex",gap:8}}>
+                    <Btn small onClick={saveCvMaster} disabled={!cvMasterForm.name||!cvMasterForm.text}>💾 Salva CV base</Btn>
+                    <Btn small outline color="#64748b" onClick={()=>setCvMasterForm(null)}>Annulla</Btn>
+                  </div>
+                </div>
+              ):(
+                <Btn small onClick={()=>setCvMasterForm(empty_cv_master())}>+ Aggiungi CV base</Btn>
+              )}
+            </div>}
+            {!showCvMasters&&cvMasters.length===0&&<div style={{color:"#475569",fontSize:13}}>Nessun CV base salvato. Apri "Gestisci CV base" e incolla il testo del tuo CV.</div>}
+          </Card>
+
+          {cvMasters.length>0&&<Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
+              <Sel label="CV base da ottimizzare" value={job.cv_master_id||""} onChange={v=>mutateJob(job.id,{cv_master_id:v?Number(v):null,cv_suggestions:[],cv_final:""})}
+                options={[{value:"",label:"— Seleziona —"},...cvMasters.map(m=>({value:String(m.id),label:m.name+" ("+m.lang+")"}))]} style={{minWidth:260}}/>
+              <Btn small onClick={()=>genCvSuggestions(job)} disabled={cvLoad||!job.cv_master_id||(!job.raw_text&&!job.notes)}>{cvLoad?<><Spinner/>Genero suggerimenti…</>:"✨ Genera suggerimenti"}</Btn>
+            </div>
+            {!job.cv_master_id&&<div style={{color:"#475569",fontSize:12}}>Seleziona un CV base.</div>}
+            {job.cv_master_id&&!job.raw_text&&!job.notes&&<div style={{background:"#f59e0b18",border:"1px solid #f59e0b44",borderRadius:8,padding:"10px 14px",color:"#f59e0b",fontSize:12}}>⚠️ Manca il testo dell'annuncio (Scheda → Note o Testo annuncio).</div>}
+          </Card>}
+
+          {(job.cv_suggestions||[]).length>0&&<Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <ST>✍️ Suggerimenti bullet-per-bullet ({(job.cv_suggestions||[]).filter(s=>s.status==="approved").length} approvati su {(job.cv_suggestions||[]).length})</ST>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              {(job.cv_suggestions||[]).map(s=>(
+                <div key={s.id} style={{background:"#0a0f1e",border:"1px solid "+(s.status==="approved"?"#10b98144":s.status==="rejected"?"#ef444444":"#1e293b"),borderRadius:10,padding:"12px 14px",opacity:s.status==="rejected"?0.5:1}}>
+                  <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>
+                    {s.keyword&&<Badge text={"🎯 "+s.keyword} color="#8b5cf6"/>}
+                    {s.status==="approved"&&<Badge text="✓ Approvato" color="#10b981"/>}
+                    {s.status==="rejected"&&<Badge text="✕ Scartato" color="#ef4444"/>}
+                  </div>
+                  <div style={{fontSize:12,color:"#64748b",textDecoration:"line-through",marginBottom:6,lineHeight:1.5}}>{s.original}</div>
+                  <textarea value={s.suggested||""} onChange={e=>updateCvSuggestion(job,s.id,{suggested:e.target.value})} rows={2} style={{...IB,resize:"vertical",fontSize:13,color:"#e2e8f0",marginBottom:6}}/>
+                  {s.reason&&<div style={{fontSize:11,color:"#475569",marginBottom:8,fontStyle:"italic"}}>{s.reason}</div>}
+                  <div style={{display:"flex",gap:6}}>
+                    <Btn small color="#10b981" onClick={()=>updateCvSuggestion(job,s.id,{status:"approved"})} disabled={s.status==="approved"}>✅ Approva</Btn>
+                    <Btn small outline color="#ef4444" onClick={()=>updateCvSuggestion(job,s.id,{status:"rejected"})} disabled={s.status==="rejected"}>❌ Scarta</Btn>
+                    {s.status!=="pending"&&<Btn small outline color="#64748b" onClick={()=>updateCvSuggestion(job,s.id,{status:"pending"})}>↺ Reset</Btn>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{marginTop:14}}>
+              <Btn onClick={()=>composeFinalCv(job)} disabled={(job.cv_suggestions||[]).filter(s=>s.status==="approved").length===0}>📄 Componi CV finale</Btn>
+            </div>
+          </Card>}
+
+          {job.cv_final&&<Card>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <ST>📋 CV ottimizzato — pronto per copia</ST>
+              <Btn small outline color="#64748b" onClick={()=>navigator.clipboard.writeText(job.cv_final)}>📋 Copia tutto</Btn>
+            </div>
+            <TA value={job.cv_final} onChange={v=>mutateJob(job.id,{cv_final:v})} rows={20}/>
+            <div style={{fontSize:11,color:"#475569",marginTop:6}}>Puoi correggere liberamente il testo prima di copiarlo in Word.</div>
+          </Card>}
+        </div>}
+
+        {tab==="cover"&&<Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <ST>✉️ Cover Letter</ST>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <Sel label="" value={job.cl_version||"CL Standard"} onChange={v=>mutateJob(job.id,{cl_version:v})} options={CL_VERSIONS} style={{marginBottom:0}}/>
+              <Btn small outline color="#8b5cf6" onClick={()=>genCL(job)} disabled={clLoad}>{clLoad?<><Spinner/>Genero…</>:"✨ Genera AI"}</Btn>
+            </div>
+          </div>
+          <TA value={job.cover_letter||""} onChange={v=>mutateJob(job.id,{cover_letter:v})} rows={16} placeholder="Premi 'Genera AI' oppure scrivi qui…"/>
+          {job.cover_letter&&<div style={{display:"flex",gap:8,marginTop:10}}>
+            <Btn small outline color="#64748b" onClick={()=>navigator.clipboard.writeText(job.cover_letter)}>📋 Copia</Btn>
+            <span style={{fontSize:12,color:"#475569",alignSelf:"center"}}>{(job.cover_letter||"").split(" ").length} parole</span>
+          </div>}
+        </Card>}
+
+        {tab==="emails"&&<Card>
+          <div style={{background:"#3b82f618",border:"1px solid #3b82f644",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#64748b",marginBottom:14}}>
+            💡 Copia email da Gmail e incollale qui. Oppure registra telefonate e note. Tutto archiviato con questa candidatura.
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <ST>📧 Corrispondenza ({(job.correspondence||[]).length})</ST>
+            <Btn small onClick={()=>mutateJob(job.id,{correspondence:[...(job.correspondence||[]),{id:Date.now(),date:new Date().toISOString().split("T")[0],direction:"Inviato",subject:"",body:"",from:""}]})}>+ Aggiungi</Btn>
+          </div>
+          {(job.correspondence||[]).length===0&&<div style={{color:"#475569",fontSize:13,textAlign:"center",padding:"16px 0"}}>Nessuna corrispondenza.</div>}
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {[...(job.correspondence||[])].sort((a,b)=>b.date.localeCompare(a.date)).map(item=>(
+              <div key={item.id} style={{background:"#0a0f1e",border:"1px solid #1e293b",borderRadius:10,padding:"12px 14px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:8}}>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    <select value={item.direction} onChange={e=>mutateJob(job.id,{correspondence:(job.correspondence||[]).map(c=>c.id===item.id?{...c,direction:e.target.value}:c)})} style={{...IB,width:"auto",fontSize:11,padding:"3px 8px"}}>
+                      {["Inviato","Ricevuto","Telefonata","Note"].map(d=><option key={d}>{d}</option>)}
+                    </select>
+                    <input type="date" value={item.date} onChange={e=>mutateJob(job.id,{correspondence:(job.correspondence||[]).map(c=>c.id===item.id?{...c,date:e.target.value}:c)})} style={{...IB,width:"auto",fontSize:12}}/>
+                    <input value={item.from||""} onChange={e=>mutateJob(job.id,{correspondence:(job.correspondence||[]).map(c=>c.id===item.id?{...c,from:e.target.value}:c)})} placeholder="Da/A email…" style={{...IB,width:180,fontSize:12}}/>
+                  </div>
+                  <button onClick={()=>mutateJob(job.id,{correspondence:(job.correspondence||[]).filter(c=>c.id!==item.id)})} style={{background:"none",border:"none",color:"#475569",cursor:"pointer",flexShrink:0}}>✕</button>
+                </div>
+                <input value={item.subject||""} onChange={e=>mutateJob(job.id,{correspondence:(job.correspondence||[]).map(c=>c.id===item.id?{...c,subject:e.target.value}:c)})} placeholder="Oggetto email…" style={{...IB,marginBottom:8,fontSize:13}}/>
+                <textarea value={item.body||""} onChange={e=>mutateJob(job.id,{correspondence:(job.correspondence||[]).map(c=>c.id===item.id?{...c,body:e.target.value}:c)})} placeholder="Incolla il testo dell'email o scrivi note telefonata…" rows={4} style={{...IB,resize:"vertical",fontSize:12}}/>
+              </div>
+            ))}
+          </div>
+        </Card>}
+
+        {tab==="followup"&&<Card><FollowupPanel job={job} onMutate={patch=>mutateJob(job.id,patch)}/></Card>}
+
+        {tab==="interviews"&&<Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <ST>🎤 Colloqui ({(job.interviews||[]).length})</ST>
+            <Btn small onClick={()=>setShowIv(v=>!v)}>+ Aggiungi</Btn>
+          </div>
+          {showIv&&<div style={{background:"#0a0f1e",border:"1px solid #334155",borderRadius:10,padding:14,marginBottom:14}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <Inp label="Data" type="date" value={ivForm.date} onChange={v=>setIvForm(p=>({...p,date:v}))}/>
+              <Sel label="Tipo" value={ivForm.type} onChange={v=>setIvForm(p=>({...p,type:v}))} options={["Telefonico","Video call","In presenza","Assessment","Panel","HR screen"]}/>
+              <Inp label="Intervistatore" value={ivForm.interviewer} onChange={v=>setIvForm(p=>({...p,interviewer:v}))} placeholder="Nome e ruolo"/>
+              <Inp label="Esito" value={ivForm.outcome} onChange={v=>setIvForm(p=>({...p,outcome:v}))} placeholder="Passato, attesa…"/>
+            </div>
+            <TA label="Note" value={ivForm.notes} onChange={v=>setIvForm(p=>({...p,notes:v}))} rows={3} style={{marginBottom:10}}/>
+            <div style={{display:"flex",gap:8}}><Btn small onClick={addIv} disabled={!ivForm.date}>💾 Salva</Btn><Btn small outline color="#64748b" onClick={()=>setShowIv(false)}>Annulla</Btn></div>
+          </div>}
+          {(job.interviews||[]).length===0&&!showIv&&<div style={{color:"#475569",fontSize:13,textAlign:"center",padding:"12px 0"}}>Nessun colloquio registrato.</div>}
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {(job.interviews||[]).map(iv=>(
+              <div key={iv.id} style={{background:"#0a0f1e",border:"1px solid #1e293b",borderRadius:8,padding:"10px 14px"}}>
+                <div style={{display:"flex",gap:8,marginBottom:4,flexWrap:"wrap"}}><Badge text={iv.type} color="#f59e0b"/><span style={{fontSize:12,color:"#64748b"}}>{iv.date}</span>{iv.interviewer&&<span style={{fontSize:12,color:"#94a3b8"}}>con {iv.interviewer}</span>}</div>
+                {iv.notes&&<div style={{fontSize:12,color:"#94a3b8",lineHeight:1.5,marginTop:4}}>{iv.notes}</div>}
+                {iv.outcome&&<div style={{fontSize:11,color:"#f59e0b",marginTop:6}}>→ {iv.outcome}</div>}
+              </div>
+            ))}
+          </div>
+        </Card>}
+      </div>
+    );
+  };
+
+  const FormView=()=>(
+    <div style={{display:"flex",flexDirection:"column",gap:14,maxWidth:820}}>
+      <Card>
+        <ST>{form.id?"✏️ Modifica":"➕ Nuova offerta manuale"}</ST>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          <Inp label="Azienda *" value={form.company} onChange={v=>setForm(p=>({...p,company:v}))} placeholder="Nexi, illimity…"/>
+          <Inp label="Ruolo *" value={form.role} onChange={v=>setForm(p=>({...p,role:v}))} placeholder="Marketing Communication Manager"/>
+          <Sel label="Settore" value={form.sector} onChange={v=>setForm(p=>({...p,sector:v}))} options={["","Fintech/Banking","Assicurazioni","SaaS B2B","Agenzia","Consulenza","Tech","Altro"]}/>
+          <Sel label="Canale" value={form.channel} onChange={v=>setForm(p=>({...p,channel:v}))} options={["","LinkedIn","Indeed","Sito aziendale","Recruiter","Referral","Altro"]}/>
+          <Sel label="Versione CV" value={form.cv_version} onChange={v=>setForm(p=>({...p,cv_version:v}))} options={CV_VERSIONS}/>
+          <Sel label="Versione Cover" value={form.cl_version} onChange={v=>setForm(p=>({...p,cl_version:v}))} options={CL_VERSIONS}/>
+          <Inp label="RAL min (k€)" type="number" value={form.salary_min} onChange={v=>setForm(p=>({...p,salary_min:v}))} placeholder="50"/>
+          <Inp label="RAL max (k€)" type="number" value={form.salary_max} onChange={v=>setForm(p=>({...p,salary_max:v}))} placeholder="70"/>
+          <Inp label="URL" value={form.url} onChange={v=>setForm(p=>({...p,url:v}))} placeholder="https://…"/>
+          <Sel label="Priorità" value={form.priority} onChange={v=>setForm(p=>({...p,priority:v}))} options={["alta","media","bassa"]}/>
+          <Inp label="Data archiviazione" type="date" value={form.date_saved} onChange={v=>setForm(p=>({...p,date_saved:v}))}/>
+          <Inp label="Data candidatura" type="date" value={form.date_applied} onChange={v=>setForm(p=>({...p,date_applied:v}))}/>
+          <Sel label="Esito" value={form.outcome} onChange={v=>setForm(p=>({...p,outcome:v}))} options={OUTCOMES} style={{gridColumn:"span 2"}}/>
+        </div>
+      </Card>
+      <Card>
+        <TA label="Note" value={form.notes} onChange={v=>setForm(p=>({...p,notes:v}))} rows={3} style={{marginBottom:10}}/>
+        <TA label="Testo annuncio (per ATS)" value={form.raw_text} onChange={v=>setForm(p=>({...p,raw_text:v}))} rows={5}/>
+      </Card>
+      <div style={{display:"flex",gap:10}}>
+        <Btn onClick={saveForm} disabled={!form.company||!form.role}>💾 Salva</Btn>
+        <Btn outline color="#64748b" onClick={()=>setView(sel?"detail":"kanban")}>Annulla</Btn>
+      </div>
+    </div>
+  );
+
+  const NAV=[{id:"board",label:"🗂 Candidature"},{id:"contacts",label:"👥 Rubrica"},{id:"analytics",label:"📊 Analytics"}];
+
+  return(
+    <div style={{background:"#020617",minHeight:"100vh",fontFamily:"'Inter',system-ui,sans-serif",color:"#e2e8f0"}}>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}} *{box-sizing:border-box;} details summary{list-style:none;} details summary::-webkit-details-marker{display:none;}`}</style>
+      <div style={{background:"#0a0f1e",borderBottom:"1px solid #1e293b",padding:"0 24px",display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",gap:20}}>
+          <div style={{fontSize:15,fontWeight:800,color:"#f1f5f9",padding:"14px 0",letterSpacing:"-0.02em"}}>Job Tracker <span style={{color:"#3b82f6"}}>FB</span></div>
+          <div style={{display:"flex",gap:2}}>
+            {NAV.map(n=>(
+              <button key={n.id} onClick={()=>{setSection(n.id);if(n.id==="board")setView("kanban");}} style={{background:section===n.id?"#1e293b":"transparent",color:section===n.id?"#e2e8f0":"#64748b",border:"none",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:13,fontWeight:700,position:"relative"}}>
+                {n.label}
+                {n.id==="analytics"&&fuAlert>0&&<span style={{position:"absolute",top:4,right:4,width:8,height:8,background:"#ef4444",borderRadius:"50%"}}/>}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:14,alignItems:"center",position:"relative"}}>
+          {section==="board"&&(view==="kanban"||view==="list")&&<div style={{display:"flex",gap:8}}>
+            <Btn small onClick={()=>setView("import")} color="#8b5cf6">🔗 Importa</Btn>
+            <Btn small outline color="#3b82f6" onClick={()=>{setForm(empty_job());setView("form");}}>+ Manuale</Btn>
+          </div>}
+          <button onClick={()=>setShowDrivePanel(v=>!v)} style={{display:"flex",alignItems:"center",gap:6,background:"transparent",border:"1px solid "+(driveStatus==="connected"?"#10b98144":driveStatus==="error"?"#ef444444":"#334155"),borderRadius:20,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:700,color:driveStatus==="connected"?"#10b981":driveStatus==="error"?"#ef4444":driveStatus==="syncing"?"#f59e0b":"#64748b"}}>
+            {driveStatus==="connected"&&"☁️ Sincronizzato"}
+            {driveStatus==="syncing"&&"☁️ Sincronizzo…"}
+            {driveStatus==="connecting"&&"☁️ Connessione…"}
+            {driveStatus==="error"&&"☁️ Errore sync"}
+            {driveStatus==="disconnected"&&"☁️ Drive non connesso"}
+          </button>
+          {showDrivePanel&&<div style={{position:"absolute",top:42,right:0,width:320,background:"#0f172a",border:"1px solid #1e293b",borderRadius:12,padding:16,zIndex:200,boxShadow:"0 8px 24px rgba(0,0,0,0.4)"}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#e2e8f0",marginBottom:8}}>Sincronizzazione Google Drive</div>
+            {driveStatus==="connected"&&<div style={{fontSize:11,color:"#475569",marginBottom:10}}>Ultima sync: {driveLastSync||"—"}</div>}
+            {driveErr&&<div style={{background:"#ef444420",border:"1px solid #ef444440",borderRadius:8,padding:"8px 10px",color:"#ef4444",fontSize:11,marginBottom:10}}>{driveErr}</div>}
+            {(driveStatus==="disconnected"||driveStatus==="error")&&<>
+              <Inp label="Google OAuth Client ID" value={driveClientIdInput} onChange={setDriveClientIdInput} placeholder="xxxx.apps.googleusercontent.com" style={{marginBottom:10}}/>
+              <Btn small onClick={driveConnect} style={{width:"100%",justifyContent:"center"}}>🔗 Connetti Google Drive</Btn>
+              <div style={{fontSize:10,color:"#475569",marginTop:10,lineHeight:1.5}}>Serve un Client ID OAuth creato su Google Cloud Console (vedi istruzioni). Il file deve essere aperto via http(s), non con doppio click.</div>
+            </>}
+            {driveStatus==="connecting"&&<div style={{display:"flex",gap:8,alignItems:"center",color:"#64748b",fontSize:12}}><Spinner/>Autorizzazione in corso…</div>}
+            {(driveStatus==="connected"||driveStatus==="syncing")&&<div style={{display:"flex",gap:8}}>
+              <Btn small onClick={driveSaveNow} disabled={driveStatus==="syncing"}>{driveStatus==="syncing"?<><Spinner/>Sync…</>:"🔄 Sincronizza ora"}</Btn>
+              <Btn small outline color="#64748b" onClick={driveDisconnect}>Disconnetti</Btn>
+            </div>}
+          </div>}
+        </div>
+      </div>
+
+      <div style={{maxWidth:1160,margin:"0 auto",padding:"20px 16px"}}>
+        {section==="board"&&(view==="kanban"||view==="list")&&(
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
+              {[["Totale",metrics.total,"#64748b"],["Attive",metrics.active,"#3b82f6"],["In colloquio",metrics.interviews,"#f59e0b"],["Follow-up urgenti",fuAlert,fuAlert>0?"#ef4444":"#10b981"]].map(([l,v,c])=>(
+                <div key={l} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:10,padding:"12px 16px"}}>
+                  <div style={{fontSize:24,fontWeight:800,color:c}}>{v}</div>
+                  <div style={{fontSize:11,color:"#475569",marginTop:2}}>{l}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+              <input value={search} onChange={e=>setSrch(e.target.value)} placeholder="🔍 Cerca…" style={{...IB,width:200}}/>
+              <select value={filterStage} onChange={e=>setFilter(e.target.value)} style={{...IB,width:"auto"}}>
+                <option value="all">Tutte le fasi</option>
+                {STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+              <div style={{display:"flex",gap:4,marginLeft:"auto"}}>
+                {["kanban","list"].map(v=><button key={v} onClick={()=>setView(v)} style={{background:view===v?"#1e293b":"transparent",color:view===v?"#e2e8f0":"#475569",border:"1px solid "+(view===v?"#334155":"transparent"),borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:13}}>{v==="kanban"?"🗂 Board":"☰ Lista"}</button>)}
+              </div>
+            </div>
+          </>
+        )}
+        {section==="board"&&(view==="detail"||view==="form"||view==="import")&&<button onClick={()=>setView("kanban")} style={{background:"none",border:"none",color:"#3b82f6",cursor:"pointer",fontSize:13,marginBottom:14,padding:0}}>← Torna alla board</button>}
+        {section==="board"&&view==="kanban"&&<KanbanView/>}
+        {section==="board"&&view==="list"&&<ListView/>}
+        {section==="board"&&view==="import"&&<ImportView/>}
+        {section==="board"&&view==="detail"&&<DetailView key={sel?.id}/>}
+        {section==="board"&&view==="form"&&<FormView/>}
+        {section==="contacts"&&<ContactsView contacts={contacts} setContacts={setContacts} jobs={jobs}/>}
+        {section==="analytics"&&<AnalyticsView jobs={jobs} onNavigate={job=>{setSel(job);setSection("board");setView("detail");setTab("followup");}}/>}
+      </div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<JobTracker/>);
+</script>
+</body>
+</html>
